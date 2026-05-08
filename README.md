@@ -7,6 +7,10 @@ matter.
 
 Use it only on systems you own or are explicitly authorized to administer.
 
+# Disclaimer
+This project was created for CCDC by Nigerald and Kalipatriot for Linux Administration, and later contributed to by BHBarlow and I.
+I do not claim to have created or own this project, but it is my goal to keep it public and contribute to building a better tool. 
+
 ## Features
 
 - Target individual IPv4 addresses, comma-separated lists, ranges, and CIDR blocks.

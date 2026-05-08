@@ -1,0 +1,20 @@
+.DS_Store
+
+# Local runtime output
+output/
+config.json
+env.json
+
+# Release/build artifacts
+dist/
+*.exe
+*.out
+*.test
+coordinate
+coordinate-*
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*.tmp

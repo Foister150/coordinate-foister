@@ -43,45 +43,75 @@ go build -o coordinate ./cmd
 
 ## Usage
 
+Requires **Go 1.23 or higher.**
+
+Ensure module dependencies are installed.
+
+`go mod download`
+
 ```text
-coordinate [options] [script ...]
-coordinate -t TARGETS -u USERS -p PASSWORDS script.sh
-coordinate -t TARGETS -u USERS -x "command"
-coordinate -U [-t TARGETS] [script ...]
+go run ./cmd -h
+
+usage: coordinate [options] [script ...]
+       coordinate -t <targets> -u <usernames> -p <passwords> <script>
+       coordinate -t <targets> -u <usernames> -x <command>
+       coordinate -U [-t <targets>] [script ...]
+
+Coordinate is a Go utility for SSH remote management. It delivers commands,
+scripts, uploads, and downloads to targeted hosts over SSH.
+
+positional arguments:
+  script ...                local shell script(s) to upload and execute
+
+targeting:
+  -t, --targets TARGETS     target IPs as singles, comma lists, ranges, or CIDR
+                            examples: 192.168.1.5, 192.168.1.10-20,
+                            192.168.1.0/24
+  -P, --port PORT           SSH port to use (default: 22)
+
+authentication:
+  -u, --usernames USERS     comma-separated username list
+  -p, --passwords PASSES    comma-separated password list
+  -k, --key KEY             SSH private key path
+  -U, --use-config          use plaintext credentials from config.json
+
+execution:
+  -x, --command COMMAND     execute direct command(s) instead of scripts
+  -E, --env ENV             prefix scripts/commands with environment values
+                            separated by semicolons
+  -S, --sudo                attempt sudo escalation if the SSH user is not root
+  -T, --timeout SECONDS     time limit per script or command (default: 30)
+  -l, --limit THREADS       thread limit per IP (default: 3)
+  -n, --no-validate         skip shell/script completion validation
+
+file transfer:
+  -F, --upload LOCAL;REMOTE
+                            upload a local file or directory to a remote path
+                            repeat the flag for multiple uploads
+  -D, --download REMOTE[;LOCAL]
+                            download a remote directory or file tree into output
+                            repeat the flag for multiple downloads
+  -W, --tmpdir DIR          local temp directory for generated script files
+                            (default: /tmp)
+
+output:
+  -o, --outfile-fmt FORMAT  save stdout under output/ using %i%, %h%, and %s%
+  -q, --quiet               print only script output
+  -Q, --super-quiet         print only script output and suppress errors
+  -e, --errors              print errors only
+  -d, --debug               print debug messages
+
+config helpers:
+  -O, --CO ROOTPASS         create a config entry from existing credentials
+                            without running password.sh
+  -C, --create-config PASS  legacy helper for scripts/misc/password.sh
+                            that script is not bundled in this repository
+  -I, --ignore-users USERS  legacy password.sh helper value
+  -A, --all-pass PASS       legacy password.sh helper value
+  -c, --callbacks IPS       callback IP value retained for script compatibility
 ```
 
-Scripts are positional arguments. Direct commands use `--command`/`-x`; scripts
-and direct commands are mutually exclusive.
-
-### Options
-
-| Option | Description |
-| --- | --- |
-| `-t, --targets string` | Target IPs. Supports single IPs, comma-separated lists, ranges like `192.168.1.10-20`, and CIDR blocks like `192.168.1.0/24`. |
-| `-u, --usernames string` | Comma-separated usernames. |
-| `-p, --passwords string` | Comma-separated passwords. If omitted and no key/config mode is used, coordinate prompts for one password. |
-| `-k, --key string` | SSH private key path. |
-| `-P, --port int` | SSH port. Default: `22`. |
-| `-l, --limit int` | Thread limit per IP. Default: `3`. |
-| `-T, --timeout int` | Time limit per script or command, in seconds. Default: `30`. |
-| `-x, --command stringArray` | Execute direct command(s) instead of scripts. Repeat the flag to run multiple commands. |
-| `-E, --env string` | Environment assignments to prefix before scripts/commands, separated by semicolons. |
-| `-W, --tmpdir string` | Local temporary directory for generated script files. Default: `/tmp`. |
-| `-F, --upload stringArray` | Upload local file or directory. Format: `local_path;remote_path`. Repeatable. |
-| `-D, --download stringArray` | Download remote directory or file tree. Format: `remote_path` or `remote_path;local_subdir`. Repeatable. |
-| `-o, --outfile-fmt string` | Save stdout under `output/` using placeholders `%i%`, `%h%`, and `%s%`. |
-| `-S, --sudo` | Attempt sudo escalation when the authenticated user is not root. |
-| `-q, --quiet` | Print only script output. |
-| `-Q, --super-quiet` | Print only script output and suppress errors. |
-| `-e, --errors` | Print errors only. |
-| `-d, --debug` | Print debug messages. |
-| `-n, --no-validate` | Do not validate shell/script completion behavior. |
-| `-U, --use-config` | Load credentials from `config.json`. |
-| `-O, --CO string` | Create a config entry from existing credentials without running `password.sh`; value is the root password to store. |
-| `-C, --create-config string` | Legacy config helper for `scripts/misc/password.sh`. That script is not bundled in this repository. |
-| `-I, --ignore-users string` | Legacy `password.sh` helper value for users to ignore. |
-| `-A, --all-pass string` | Legacy `password.sh` helper value to set a shared password for users except root and ignored users. |
-| `-c, --callbacks string` | Callback IP address value retained for compatibility with existing scripts. |
+Scripts and direct commands are mutually exclusive.
 
 ## Examples
 

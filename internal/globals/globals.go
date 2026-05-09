@@ -33,7 +33,7 @@ var (
 	Port            = flag.IntP("port", "P", 22, "SSH port to use")
 	Threads         = flag.IntP("limit", "l", 3, "Thread limit per IP")
 	Timelimit       = flag.IntP("timeout", "T", 30, "Time limit per script")
-	Targets         = flag.StringP("targets", "t", "", "List of target IP addresses (ex., 127.0.0.1-127.0.0.5,192.168.1.0/24)")
+	Targets         = flag.StringP("targets", "t", "", "List of target IP addresses or DNS names (ex., 127.0.0.1-127.0.0.5,192.168.1.0/24,host.example)")
 	Usernames       = flag.StringP("usernames", "u", "", "List of usernames")
 	Passwords       = flag.StringP("passwords", "p", "", "List of passwords")
 	Callbacks       = flag.StringP("callbacks", "c", "", "Callback IP address(es)")

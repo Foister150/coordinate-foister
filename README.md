@@ -13,7 +13,7 @@ I do not claim to have created or own this project, but it is my goal to keep it
 
 ## Features
 
-- Target individual IPv4 addresses, comma-separated lists, ranges, and CIDR blocks.
+- Target DNS names, individual IPv4 addresses, comma-separated lists, ranges, and CIDR blocks.
 - Authenticate with password lists, prompted passwords, SSH agent keys, SSH private keys, or saved config entries.
 - Run shell scripts or direct commands across many hosts.
 - Upload files or directories to remote hosts over SSH.
@@ -64,9 +64,10 @@ positional arguments:
   script ...                local shell script(s) to upload and execute
 
 targeting:
-  -t, --targets TARGETS     target IPs as singles, comma lists, ranges, or CIDR
-                            examples: 192.168.1.5, 192.168.1.10-20,
-                            192.168.1.0/24
+  -t, --targets TARGETS     target DNS names or IPs as singles, comma lists,
+                            ranges, or CIDR
+                            examples: host.example, 192.168.1.5,
+                            192.168.1.10-20, 192.168.1.0/24
   -P, --port PORT           SSH port to use (default: 22)
 
 authentication:

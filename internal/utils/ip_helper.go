@@ -15,6 +15,13 @@ var lookupIP = net.LookupIP
 func addTargetToSet(token string, builder *netaddr.IPSetBuilder) error {
 	logger.Debug("addTargetToSet called with token:", token)
 
+	ip, ipErr := netaddr.ParseIP(token)
+	if ipErr == nil {
+		logger.Debug("Token identified as single IP")
+		addIPToBuilder(ip, builder)
+		return nil
+	}
+
 	if isIPRangeToken(token) {
 		logger.Debug("Token identified as IP range")
 		return addIPRange(token, builder)
@@ -23,16 +30,10 @@ func addTargetToSet(token string, builder *netaddr.IPSetBuilder) error {
 		return addCIDR(token, builder)
 	}
 
-	if ip, err := netaddr.ParseIP(token); err == nil {
-		logger.Debug("Token identified as single IP")
-		builder.Add(ip)
-		logger.Debug(fmt.Sprintf("Added single IP '%s' to builder.", ip))
-		return nil
-	}
-
-	if isInvalidIPLiteral(token) {
+	if looksLikeIPLiteral(token) {
 		logger.Debug("Token identified as invalid IP literal")
-		return addSingleIP(token, builder)
+		logger.Err("Error parsing IP:", ipErr)
+		return fmt.Errorf("invalid IP '%s': %w", token, ipErr)
 	}
 
 	logger.Debug("Token identified as DNS name")
@@ -66,7 +67,7 @@ func isIPRangeToken(token string) bool {
 	return hasRange
 }
 
-func isInvalidIPLiteral(token string) bool {
+func looksLikeIPLiteral(token string) bool {
 	if strings.Contains(token, ":") {
 		return true
 	}
@@ -116,27 +117,18 @@ func addIPRange(token string, builder *netaddr.IPSetBuilder) error {
 		logger.Debug(fmt.Sprintf("Octet %d expanded to: %v", i, octetRanges[i]))
 	}
 
-	var expandedIPs []string
+	expandedCount := 0
 	for _, o1 := range octetRanges[0] {
 		for _, o2 := range octetRanges[1] {
 			for _, o3 := range octetRanges[2] {
 				for _, o4 := range octetRanges[3] {
-					expandedIPs = append(expandedIPs, fmt.Sprintf("%d.%d.%d.%d", o1, o2, o3, o4))
+					builder.Add(netaddr.IPv4(uint8(o1), uint8(o2), uint8(o3), uint8(o4)))
+					expandedCount++
 				}
 			}
 		}
 	}
-	logger.Debug(fmt.Sprintf("Generated %d expanded IPs from range.", len(expandedIPs)))
-
-	for _, ipStr := range expandedIPs {
-		ip, err := netaddr.ParseIP(ipStr)
-		if err != nil {
-			logger.Err("Error parsing expanded IP:", err)
-			return fmt.Errorf("failed to parse expanded IP '%s': %w", ipStr, err)
-		}
-		builder.Add(ip)
-	}
-	logger.Debug("Added all expanded IPs to the builder.")
+	logger.Debug(fmt.Sprintf("Added %d expanded IPs from range.", expandedCount))
 	return nil
 }
 
@@ -156,7 +148,7 @@ func parseOctetRange(octet string) ([]int, error) {
 			return nil, fmt.Errorf("invalid range '%s'", octet)
 		}
 
-		var result []int
+		result := make([]int, 0, end-start+1)
 		for i := start; i <= end; i++ {
 			result = append(result, i)
 		}
@@ -186,17 +178,9 @@ func addCIDR(token string, builder *netaddr.IPSetBuilder) error {
 	return nil
 }
 
-func addSingleIP(token string, builder *netaddr.IPSetBuilder) error {
-	logger.Debug("addSingleIP called with token:", token)
-
-	ip, err := netaddr.ParseIP(token)
-	if err != nil {
-		logger.Err("Error parsing IP:", err)
-		return fmt.Errorf("invalid IP '%s': %w", token, err)
-	}
+func addIPToBuilder(ip netaddr.IP, builder *netaddr.IPSetBuilder) {
 	builder.Add(ip)
 	logger.Debug(fmt.Sprintf("Added single IP '%s' to builder.", ip))
-	return nil
 }
 
 func addDNSTarget(token string, builder *netaddr.IPSetBuilder) error {
@@ -214,9 +198,9 @@ func addDNSTarget(token string, builder *netaddr.IPSetBuilder) error {
 			continue
 		}
 
-		ip, err := netaddr.ParseIP(resolvedIP.String())
-		if err != nil {
-			logger.Warning(fmt.Sprintf("Skipping unusable DNS result '%s' for target '%s': %s", resolvedIP, token, err))
+		ip, ok := netaddr.FromStdIP(resolvedIP)
+		if !ok {
+			logger.Warning(fmt.Sprintf("Skipping unusable DNS result '%s' for target '%s'", resolvedIP, token))
 			continue
 		}
 

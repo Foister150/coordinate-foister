@@ -114,6 +114,21 @@ func TestParseIPsReturnsDNSLookupError(t *testing.T) {
 	}
 }
 
+func TestParseIPsRejectsInvalidIPLiteralWithoutDNSLookup(t *testing.T) {
+	withLookupIP(t, func(host string) ([]net.IP, error) {
+		t.Fatalf("unexpected DNS lookup for %q", host)
+		return nil, nil
+	})
+
+	_, _, err := ParseIPs("999.1.1.1")
+	if err == nil {
+		t.Fatal("ParseIPs() error = nil, want invalid IP error")
+	}
+	if !strings.Contains(err.Error(), "invalid IP '999.1.1.1'") {
+		t.Fatalf("ParseIPs() error = %q, want invalid IP context", err)
+	}
+}
+
 func TestParseIPsReturnsErrorWhenDNSHasNoUsableIPs(t *testing.T) {
 	withLookupIP(t, func(host string) ([]net.IP, error) {
 		if host != "empty.test" {

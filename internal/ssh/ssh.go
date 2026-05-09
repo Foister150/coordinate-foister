@@ -738,7 +738,7 @@ func Upload(client *goph.Client, localPath string, remotePath string) error {
 func IsValidPort(host string, port int) bool {
 	logger.Debug(fmt.Sprintf("Checking if port %d is valid on host %s", port, host))
 
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := net.JoinHostPort(host, fmt.Sprint(port))
 	conn, err := net.DialTimeout("tcp", address, 5000*time.Millisecond)
 	if err != nil {
 		return false

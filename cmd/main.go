@@ -37,7 +37,7 @@ func main() {
 	}
 	logger.Debug(fmt.Sprintf("Parsed %d IP addresses.", len(Addresses)))
 	logger.Debug(fmt.Sprintf("Key: %s, PasswordList length: %d", *Key, len(PasswordList)))
-	if *Key != "" || len(PasswordList) != 0 {
+	if runner.KeyAuthEnabled() || len(PasswordList) != 0 {
 		useManualDeploy()
 	}
 
@@ -134,7 +134,7 @@ func prepareManualDeploy() {
 	UsernameList = strings.Split(*Usernames, ",")
 	logger.Debug(fmt.Sprintf("Parsed usernames: %v", UsernameList))
 
-	if *Passwords == "" && *Key == "" && *CreateConfig == "" {
+	if *Passwords == "" && *CreateConfig == "" && !runner.KeyAuthEnabled() {
 		fmt.Print("Password: ")
 		password, err := term.ReadPassword(int(syscall.Stdin))
 		if err != nil {
@@ -146,8 +146,8 @@ func prepareManualDeploy() {
 	} else if *Passwords != "" {
 		PasswordList = strings.Split(*Passwords, ",")
 		logger.Debug(fmt.Sprintf("Parsed passwords: %v", PasswordList))
-	} else if *Key != "" {
-		_, err = os.ReadFile(*Key)
+	} else if *Key != "" && *Key != AgentKeyFlagValue {
+		_, err = os.ReadFile(strings.TrimSpace(*Key))
 		if err != nil {
 			logger.Fatal(err)
 		}

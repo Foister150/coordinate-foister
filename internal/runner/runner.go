@@ -2,15 +2,35 @@ package runner
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/melbahja/goph"
+	flag "github.com/spf13/pflag"
 	cryptossh "golang.org/x/crypto/ssh"
 
 	. "github.com/LanodonF/coordinate-foister/internal/globals"
 	"github.com/LanodonF/coordinate-foister/internal/logger"
 	"github.com/LanodonF/coordinate-foister/internal/ssh"
 )
+
+func KeyAuthEnabled() bool {
+	if flag.CommandLine.Changed("key") {
+		return true
+	}
+	return *Passwords == "" && *CreateConfig == "" && goph.HasAgent()
+}
+
+func keyAuth() (goph.Auth, string, error) {
+	keyPath := strings.TrimSpace(*Key)
+	if keyPath == "" || keyPath == AgentKeyFlagValue {
+		auth, err := goph.UseAgent()
+		return auth, "ssh-agent", err
+	}
+
+	auth, err := goph.Key(keyPath, "")
+	return auth, keyPath, err
+}
 
 func handleSSHConnection(i Instance, client *goph.Client, err error) bool {
 	if err != nil {
@@ -89,13 +109,14 @@ func RunnerBf(ip string, outfile string, w *sync.WaitGroup) {
 			}
 		}
 
-		if !found && *Key != "" {
-			logger.DebugExtra(i, fmt.Sprintf("Trying key-based authentication for username '%s'", u))
-			privKey, err := goph.Key(*Key, "")
+		if !found && KeyAuthEnabled() {
+			i.Username = u
+			privKey, source, err := keyAuth()
 			if err != nil {
-				logger.ErrExtra(i, fmt.Sprintf("Error loading private key for user '%s': %s", u, err))
+				logger.ErrExtra(i, fmt.Sprintf("Error loading key authentication from %s for user '%s': %s", source, u, err))
 				continue
 			}
+			logger.DebugExtra(i, fmt.Sprintf("Trying key-based authentication from %s for username '%s'", source, u))
 			client, err := goph.NewConn(&goph.Config{
 				User:     u,
 				Addr:     ip,

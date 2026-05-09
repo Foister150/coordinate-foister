@@ -14,7 +14,7 @@ I do not claim to have created or own this project, but it is my goal to keep it
 ## Features
 
 - Target individual IPv4 addresses, comma-separated lists, ranges, and CIDR blocks.
-- Authenticate with password lists, prompted passwords, SSH private keys, or saved config entries.
+- Authenticate with password lists, prompted passwords, SSH agent keys, SSH private keys, or saved config entries.
 - Run shell scripts or direct commands across many hosts.
 - Upload files or directories to remote hosts over SSH.
 - Download remote directories into local per-host output folders.
@@ -72,7 +72,8 @@ targeting:
 authentication:
   -u, --usernames USERS     comma-separated username list
   -p, --passwords PASSES    comma-separated password list
-  -k, --key KEY             SSH private key path
+  -k, --key[=KEY]           use SSH agent keys, or optionally pass a private
+                            key path
   -U, --use-config          use plaintext credentials from config.json
 
 execution:
@@ -121,7 +122,13 @@ Run a script across a small range:
 coordinate -t 192.168.1.10-20 -u root -p 'password1,password2' ./audit.sh
 ```
 
-Run a direct command:
+Run a direct command with keys loaded in `ssh-agent`:
+
+```sh
+coordinate -t 10.10.1.0/24 -u admin -k -x 'hostname && whoami'
+```
+
+Run a direct command with a key in a custom location:
 
 ```sh
 coordinate -t 10.10.1.0/24 -u admin -k ~/.ssh/id_ed25519 -x 'hostname && whoami'

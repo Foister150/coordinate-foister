@@ -2,15 +2,46 @@ package runner
 
 import (
 	"fmt"
+	"net"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/melbahja/goph"
+	flag "github.com/spf13/pflag"
 	cryptossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	. "github.com/LanodonF/coordinate-foister/internal/globals"
 	"github.com/LanodonF/coordinate-foister/internal/logger"
 	"github.com/LanodonF/coordinate-foister/internal/ssh"
 )
+
+func KeyAuthEnabled() bool {
+	return keyAuthEnabled(flag.CommandLine)
+}
+
+func keyAuthEnabled(flags *flag.FlagSet) bool {
+	return flags.Changed("key")
+}
+
+func keyAuth() (goph.Auth, string, func(), error) {
+	keyPath := strings.TrimSpace(*Key)
+	if keyPath == "" || keyPath == AgentKeyFlagValue {
+		sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+		if err != nil {
+			return nil, "ssh-agent", nil, fmt.Errorf("could not find ssh agent: %w", err)
+		}
+
+		cleanup := func() {
+			_ = sshAgent.Close()
+		}
+		return goph.Auth{cryptossh.PublicKeysCallback(agent.NewClient(sshAgent).Signers)}, "ssh-agent", cleanup, nil
+	}
+
+	auth, err := goph.Key(keyPath, "")
+	return auth, keyPath, nil, err
+}
 
 func handleSSHConnection(i Instance, client *goph.Client, err error) bool {
 	if err != nil {
@@ -71,6 +102,15 @@ func RunnerBf(ip string, outfile string, w *sync.WaitGroup) {
 		return
 	}
 
+	keyAuthRequested := KeyAuthEnabled()
+	var (
+		keyAuthMethod  goph.Auth
+		keyAuthSource  string
+		keyAuthCleanup func()
+		keyAuthErr     error
+		keyAuthLoaded  bool
+	)
+
 	found := false
 	for _, u := range UsernameList {
 		if found {
@@ -89,18 +129,26 @@ func RunnerBf(ip string, outfile string, w *sync.WaitGroup) {
 			}
 		}
 
-		if !found && *Key != "" {
-			logger.DebugExtra(i, fmt.Sprintf("Trying key-based authentication for username '%s'", u))
-			privKey, err := goph.Key(*Key, "")
-			if err != nil {
-				logger.ErrExtra(i, fmt.Sprintf("Error loading private key for user '%s': %s", u, err))
-				continue
+		if !found && keyAuthRequested {
+			i.Username = u
+			if !keyAuthLoaded {
+				keyAuthMethod, keyAuthSource, keyAuthCleanup, keyAuthErr = keyAuth()
+				keyAuthLoaded = true
+				if keyAuthErr != nil {
+					logger.ErrExtra(i, fmt.Sprintf("Error loading key authentication from %s: %s", keyAuthSource, keyAuthErr))
+					keyAuthRequested = false
+					continue
+				}
+				if keyAuthCleanup != nil {
+					defer keyAuthCleanup()
+				}
 			}
+			logger.DebugExtra(i, fmt.Sprintf("Trying key-based authentication from %s for username '%s'", keyAuthSource, u))
 			client, err := goph.NewConn(&goph.Config{
 				User:     u,
 				Addr:     ip,
 				Port:     uint(*Port),
-				Auth:     privKey,
+				Auth:     keyAuthMethod,
 				Callback: cryptossh.InsecureIgnoreHostKey(),
 			})
 			found = handleSSHConnection(i, client, err)

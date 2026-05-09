@@ -16,6 +16,7 @@ import (
 func Init() {
 	logger.InitLogger()
 
+	os.Args = append([]string{os.Args[0]}, normalizeOptionalKeyArgs(os.Args[1:])...)
 	flag.Parse()
 
 	Timeout = time.Duration(*Timelimit * int(time.Second))
@@ -38,6 +39,29 @@ func Init() {
 			logger.Err("Error creating output directory.")
 		}
 	}
+}
+
+func normalizeOptionalKeyArgs(args []string) []string {
+	normalized := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-k" || arg == "--key":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				normalized = append(normalized, arg+"="+args[i+1])
+				i++
+			} else {
+				normalized = append(normalized, arg)
+			}
+		case strings.HasPrefix(arg, "-k") && !strings.HasPrefix(arg, "-k="):
+			normalized = append(normalized, "-k="+strings.TrimPrefix(arg, "-k"))
+		default:
+			normalized = append(normalized, arg)
+		}
+	}
+
+	return normalized
 }
 
 func InputCheck() error {

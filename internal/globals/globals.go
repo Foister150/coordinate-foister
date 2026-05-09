@@ -8,6 +8,8 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
+const AgentKeyFlagValue = "ssh-agent"
+
 type Instance struct {
 	ID       int
 	IP       string
@@ -36,7 +38,7 @@ var (
 	Passwords       = flag.StringP("passwords", "p", "", "List of passwords")
 	Callbacks       = flag.StringP("callbacks", "c", "", "Callback IP address(es)")
 	Outfile         = flag.StringP("outfile-fmt", "o", "", "Output format. If not specified, then no output is saved.")
-	Key             = flag.StringP("key", "k", "", "Use this SSH key to connect")
+	Key             = flag.StringP("key", "k", "", "Use SSH agent keys, or optionally pass a private key path")
 	Environment     = flag.StringP("env", "E", "", "Set these variables before running scripts")
 	TmpDir          = flag.StringP("tmpdir", "W", "/tmp", "Directory to store temporary files")
 	DownloadDirs    = flag.StringArrayP("download", "D", []string{}, "Download remote directory(s) to local output (e.g. -D /etc/ssh -D /var/log)")
@@ -64,3 +66,7 @@ var (
 	Addresses       = []netaddr.IP{}
 	StringAddresses = []string{}
 )
+
+func init() {
+	flag.Lookup("key").NoOptDefVal = AgentKeyFlagValue
+}

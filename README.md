@@ -182,7 +182,6 @@ Example `env.json`:
 
 ## Security Notes
 
-- Coordinate disables SSH host key verification for speed and lab flexibility.
 - Passwords supplied on the command line may be visible to local process inspection.
 - `config.json` stores credentials in plaintext. Keep it out of git and restrict local filesystem access.
 - `--sudo` sends the authenticated password through sudo over the remote shell.

@@ -26,8 +26,7 @@ go test -race ./...
 | `internal/cli` | `cli.go` | Flag init, `InputCheck`, arg normalization |
 | `internal/globals` | `globals.go` | Flags, shared globals, `Instance` struct |
 | `internal/runner` | `runner.go` | SSH auth loop and credential-based runners |
-| `internal/ssh` | `ssh.go` | SSH execution, file upload/download, port validation |
-| `internal/ssh` | `sudo.go` | Sudo privilege checks |
+| `internal/ssh` | `ssh.go` | SSH execution, sudo wrapping, file upload/download, port validation |
 | `internal/utils` | `ip_helper.go`, `utils.go` | IP/CIDR/range/DNS parsing and tar helpers |
 | `internal/config` | `config.go`, `env.go` | `config.json` and `env.json` read/write |
 | `internal/logger` | `logger.go` | Colored leveled logging |
@@ -50,6 +49,13 @@ username/password combinations. Both paths converge at `SsherWrapper`.
 Script files are pre-read into `ScriptContentsMap` before goroutines launch.
 `SsherWrapper` reads script contents from that map instead of rereading from
 disk per host.
+
+`SsherWrapper` prepares command/script execution once per SSH connection before
+payload goroutines launch. It validates that the remote shell produces stdout,
+resolves the hostname, and builds an immutable execution context that tells
+workers whether to wrap payload commands with `sudo -S`. Do not treat a sudo
+probe as a persistent root shell; each non-root `--sudo` payload must still be
+wrapped explicitly.
 
 `-l` / `--limit` caps concurrent script executions per host. `-m` /
 `--max-hosts` caps concurrent host connections globally when nonzero.

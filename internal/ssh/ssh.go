@@ -25,23 +25,15 @@ import (
 
 var winBannerRe = regexp.MustCompile(`(?i)windows|winssh`)
 
+type hostExecutionContext struct {
+	hostname             string
+	shellValid           bool
+	wrapPayloadsWithSudo bool
+}
+
 func SsherWrapper(i Instance, client *goph.Client) {
 	logger.Debug(fmt.Sprintf("Starting SsherWrapper for instance: %+v", i))
 	var wg sync.WaitGroup
-
-	// Resolve hostname early so downloads can use it for directory names
-	if i.Hostname == "" {
-		output, err := client.Run("hostname")
-		if err != nil {
-			output, err = client.Run("cat /etc/hostname")
-		}
-		if err == nil && !strings.Contains(string(output), "No such file or directory") {
-			i.Hostname = strings.TrimSpace(string(output))
-		} else {
-			i.Hostname = i.IP
-		}
-		logger.Debug(fmt.Sprintf("Resolved hostname early: %s", i.Hostname))
-	}
 
 	// Upload local files/dirs if -F flags were specified
 	if len(*UploadFiles) > 0 {
@@ -52,6 +44,10 @@ func SsherWrapper(i Instance, client *goph.Client) {
 	// Download remote directories if -D flags were specified
 	if len(*DownloadDirs) > 0 {
 		logger.Debug(fmt.Sprintf("Download directories requested: %v", *DownloadDirs))
+		if i.Hostname == "" {
+			i.Hostname = resolveRemoteHostname(i, client)
+			logger.Debug(fmt.Sprintf("Resolved hostname for downloads: %s", i.Hostname))
+		}
 		DownloadRemoteDirs(i, client)
 	}
 
@@ -66,6 +62,14 @@ func SsherWrapper(i Instance, client *goph.Client) {
 		IncrementTotalRuns()
 		return
 	}
+
+	hostCtx := prepareHostExecutionContext(i, client)
+	if !hostCtx.shellValid {
+		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
+		AppendBrokenHost(i.IP)
+		return
+	}
+	i.Hostname = hostCtx.hostname
 
 	// Handle direct commands if specified
 	if len(Commands) > 0 {
@@ -82,7 +86,7 @@ func SsherWrapper(i Instance, client *goph.Client) {
 			fullCommand += command
 
 			wg.Add(1)
-			go ssherCommand(i, client, fullCommand, &wg)
+			go ssherCommand(i, client, hostCtx, fullCommand, &wg)
 			i.ID++
 		}
 		wg.Wait()
@@ -119,7 +123,7 @@ func SsherWrapper(i Instance, client *goph.Client) {
 			currentScript := Script
 			go func() {
 				defer func() { <-sem }()
-				ssher(currentI, client, currentScript, &wg)
+				ssher(currentI, client, hostCtx, currentScript, &wg)
 			}()
 			i.ID++
 		}
@@ -129,74 +133,101 @@ func SsherWrapper(i Instance, client *goph.Client) {
 	logger.Debug("Finished executing all threads in SsherWrapper.")
 }
 
-func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.WaitGroup) {
+func prepareHostExecutionContext(i Instance, client *goph.Client) hostExecutionContext {
+	output, _ := client.Run("echo a ; asdfhasdf")
+	hostname := i.Hostname
+	if len(output) > 0 && hostname == "" {
+		hostname = resolveRemoteHostname(i, client)
+	}
+
+	hostCtx := newHostExecutionContext(i, output, hostname, *Sudo)
+	if !hostCtx.shellValid {
+		return hostCtx
+	}
+	if hostCtx.wrapPayloadsWithSudo {
+		logger.InfoExtra(i, "Sudo is enabled. Payloads will be executed through sudo.")
+	} else if i.Username != "root" {
+		logger.InfoExtra(i, "Not root, not sudoing. Proceeding with user.")
+	}
+	logger.Debug(fmt.Sprintf("Prepared host execution context for %s: %+v", i.IP, hostCtx))
+	return hostCtx
+}
+
+func newHostExecutionContext(i Instance, shellOutput []byte, hostname string, sudoEnabled bool) hostExecutionContext {
+	if hostname == "" {
+		hostname = i.IP
+	}
+	return hostExecutionContext{
+		hostname:             hostname,
+		shellValid:           len(shellOutput) > 0,
+		wrapPayloadsWithSudo: shouldWrapPayloadsWithSudo(i.Username, sudoEnabled),
+	}
+}
+
+func resolveRemoteHostname(i Instance, client *goph.Client) string {
+	output, err := client.Run("hostname")
+	if err != nil {
+		logger.Debug("Hostname command failed, attempting 'cat /etc/hostname'")
+		output, err = client.Run("cat /etc/hostname")
+	}
+	if !strings.Contains(string(output), "No such file or directory") {
+		hostname := strings.TrimSpace(string(output))
+		if hostname != "" {
+			logger.Debug(fmt.Sprintf("Resolved hostname: %s", hostname))
+			return hostname
+		}
+	}
+	logger.Debug("No hostname found.")
+	return i.IP
+}
+
+func shouldWrapPayloadsWithSudo(username string, sudoEnabled bool) bool {
+	return username != "root" && sudoEnabled
+}
+
+func commandExecutionCommand(command string, i Instance, hostCtx hostExecutionContext) string {
+	if hostCtx.wrapPayloadsWithSudo {
+		return fmt.Sprintf("echo \"%s\" | sudo -S bash -c '%s'", i.Password, command)
+	}
+	return command
+}
+
+func scriptExecutionCommand(remoteFilename string, i Instance, hostCtx hostExecutionContext) string {
+	if hostCtx.wrapPayloadsWithSudo {
+		return fmt.Sprintf("echo \"%s\" | sudo -S %s; sudo rm %s", i.Password, remoteFilename, remoteFilename)
+	}
+	return fmt.Sprintf("%s ; rm %s", remoteFilename, remoteFilename)
+}
+
+func resolveOutfile(i Instance, scriptName string) string {
+	outfile := strings.Replace(i.Outfile, "%i%", i.IP, -1)
+	outfile = strings.Replace(outfile, "%h%", i.Hostname, -1)
+	outfile = strings.Replace(outfile, "%s%", scriptName, -1)
+	return outfile
+}
+
+func scriptOutfileName(scriptPath string) string {
+	return strings.TrimSuffix(scriptPath, ".sh")
+}
+
+func ssherCommand(i Instance, client *goph.Client, hostCtx hostExecutionContext, command string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	logger.Debug(fmt.Sprintf("Starting ssherCommand for instance: %+v with command: %s", i, command))
 
-	// Test SSH connection validity
-	output, err := client.Run("echo a ; asdfhasdf")
-	if len(output) == 0 {
-		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
-		AppendBrokenHost(i.IP)
-		return
-	}
-
-	elevated := true
-	if i.Username != "root" {
-		elevated = false
-		logger.Debug(fmt.Sprintf("User '%s' is not root.", i.Username))
-		if *Sudo {
-			logger.Debug("Sudo is enabled. Attempting privilege escalation.")
-			if escalateSudo(i, client) {
-				elevated = true
-				logger.InfoExtra(i, "Privilege escalation succeeded.")
-			} else {
-				logger.InfoExtra(i, "Privilege escalation failed.")
-			}
-		} else {
-			logger.InfoExtra(i, "Not root, not sudoing. Proceeding with user.")
-		}
-	}
-
-	// Get hostname for logging
-	name := "hostname"
-	output, err = client.Run(name)
-	if err != nil {
-		logger.Debug("Hostname command failed, attempting 'cat /etc/hostname'")
-		name = "cat /etc/hostname"
-		output, err = client.Run(name)
-	}
-	stroutput := string(output)
-	if !strings.Contains(stroutput, "No such file or directory") {
-		i.Hostname = strings.TrimSpace(stroutput)
-		logger.Debug(fmt.Sprintf("Resolved hostname: %s", i.Hostname))
-	} else {
-		i.Hostname = i.IP
-		logger.Debug("No hostname found.")
-	}
-
-	// Update output file path with placeholders
-	i.Outfile = strings.Replace(i.Outfile, "%i%", i.IP, -1)
-	i.Outfile = strings.Replace(i.Outfile, "%h%", i.Hostname, -1)
-	i.Outfile = strings.Replace(i.Outfile, "%s%", "command", -1) // Use "command" as script name replacement
-
+	i.Hostname = hostCtx.hostname
+	i.Outfile = resolveOutfile(i, "command")
 	logger.Debug(fmt.Sprintf("Resolved output file path: %s", i.Outfile))
 
 	// Execute command with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 
-	var execCommand string
-	if elevated || !*Sudo {
-		execCommand = command
-	} else {
-		execCommand = fmt.Sprintf("echo \"%s\" | sudo -S bash -c '%s'", i.Password, command)
-	}
+	execCommand := commandExecutionCommand(command, i, hostCtx)
 	logger.Debug(fmt.Sprintf("Executing command: %s", execCommand))
 
-	output, err = client.RunContext(ctx, execCommand)
-	stroutput = string(output)
+	output, err := client.RunContext(ctx, execCommand)
+	stroutput := string(output)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "context deadline exceeded") {
@@ -228,7 +259,7 @@ func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.Wait
 	logger.Debug(fmt.Sprintf("Total runs incremented: %d", totalRuns))
 }
 
-func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
+func ssher(i Instance, client *goph.Client, hostCtx hostExecutionContext, script string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	logger.Debug(fmt.Sprintf("Starting ssher for instance: %+v with script length: %d", i, len(script)))
@@ -237,53 +268,11 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 	remoteFilename := fmt.Sprintf("/tmp/%s", utils.GenerateRandomFileName(16))
 	logger.Debug(fmt.Sprintf("Generated temporary filename: %s", filename))
 
-	output, err := client.Run("echo a ; asdfhasdf")
-	if len(output) == 0 {
-		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
-		AppendBrokenHost(i.IP)
-		return
-	}
-
-	elevated := true
-	if i.Username != "root" {
-		elevated = false
-		logger.Debug(fmt.Sprintf("User '%s' is not root.", i.Username))
-		if *Sudo {
-			logger.Debug("Sudo is enabled. Attempting privilege escalation.")
-			if escalateSudo(i, client) {
-				elevated = true
-				logger.InfoExtra(i, "Privilege escalation succeeded.")
-			} else {
-				logger.InfoExtra(i, "Privilege escalation failed.")
-			}
-		} else {
-			logger.InfoExtra(i, "Not root, not sudoing. Proceeding with user.")
-		}
-	}
-
-	name := "hostname"
-	output, err = client.Run(name)
-	if err != nil {
-		logger.Debug("Hostname command failed, attempting 'cat /etc/hostname'")
-		name = "cat /etc/hostname"
-		output, err = client.Run(name)
-	}
-	stroutput := string(output)
-	if !strings.Contains(stroutput, "No such file or directory") {
-		i.Hostname = strings.TrimSpace(stroutput)
-		logger.Debug(fmt.Sprintf("Resolved hostname: %s", i.Hostname))
-	} else {
-		i.Hostname = i.IP
-		logger.Debug("No hostname found.")
-	}
-
-	i.Outfile = strings.Replace(i.Outfile, "%i%", i.IP, -1)
-	i.Outfile = strings.Replace(i.Outfile, "%h%", i.Hostname, -1)
-	i.Outfile = strings.Replace(i.Outfile, "%s%", strings.TrimSuffix(i.Script, ".sh"), -1)
-
+	i.Hostname = hostCtx.hostname
+	i.Outfile = resolveOutfile(i, scriptOutfileName(i.Script))
 	logger.Debug(fmt.Sprintf("Resolved output file path: %s", i.Outfile))
 
-	err = os.WriteFile(filename, []byte(script), 0644)
+	err := os.WriteFile(filename, []byte(script), 0644)
 	if err != nil {
 		logger.Err(fmt.Sprintf("Error writing to temporary file: %s", filename))
 		return
@@ -306,16 +295,11 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 
-	var command string
-	if elevated || !*Sudo {
-		command = fmt.Sprintf("%s ; rm %s", remoteFilename, remoteFilename)
-	} else {
-		command = fmt.Sprintf("echo \"%s\" | sudo -S %s; sudo rm %s", i.Password, remoteFilename, remoteFilename)
-	}
+	command := scriptExecutionCommand(remoteFilename, i, hostCtx)
 	logger.Debug(fmt.Sprintf("Executing command: %s", command))
 
-	output, err = client.RunContext(ctx, command)
-	stroutput = string(output)
+	output, err := client.RunContext(ctx, command)
+	stroutput := string(output)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "context deadline exceeded") {

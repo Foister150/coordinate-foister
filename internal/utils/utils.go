@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ func ParseIPs(targets string) ([]netaddr.IP, []string, error) {
 	logger.Debug("Split targets into tokens:", targetTokens)
 
 	ipSetBuilder := netaddr.IPSetBuilder{}
+	dnsTokens := []string{}
 
 	for _, token := range targetTokens {
 		token = strings.TrimSpace(token)
@@ -31,10 +33,45 @@ func ParseIPs(targets string) ([]netaddr.IP, []string, error) {
 			continue
 		}
 		logger.Debug("Processing token:", token)
-		if err := addTargetToSet(token, &ipSetBuilder); err != nil {
-			logger.Err("Error adding target to IP set:", err)
-			return nil, nil, err
+
+		ip, ipErr := netaddr.ParseIP(token)
+		if ipErr == nil {
+			logger.Debug("Token identified as single IP")
+			addIPToBuilder(ip, &ipSetBuilder)
+			continue
 		}
+
+		if isIPRangeToken(token) {
+			logger.Debug("Token identified as IP range")
+			if err := addIPRange(token, &ipSetBuilder); err != nil {
+				logger.Err("Error adding IP range to IP set:", err)
+				return nil, nil, err
+			}
+			continue
+		}
+
+		if strings.Contains(token, "/") {
+			logger.Debug("Token identified as CIDR")
+			if err := addCIDR(token, &ipSetBuilder); err != nil {
+				logger.Err("Error adding CIDR to IP set:", err)
+				return nil, nil, err
+			}
+			continue
+		}
+
+		if looksLikeIPLiteral(token) {
+			logger.Debug("Token identified as invalid IP literal")
+			logger.Err("Error parsing IP:", ipErr)
+			return nil, nil, fmt.Errorf("invalid IP '%s': %w", token, ipErr)
+		}
+
+		logger.Debug("Token identified as DNS name")
+		dnsTokens = append(dnsTokens, token)
+	}
+
+	if err := addDNSTokens(dnsTokens, &ipSetBuilder); err != nil {
+		logger.Err("Error adding DNS target to IP set:", err)
+		return nil, nil, err
 	}
 
 	ipSet, err := ipSetBuilder.IPSet()
@@ -51,6 +88,64 @@ func ParseIPs(targets string) ([]netaddr.IP, []string, error) {
 	logger.Debug("Extracted string addresses:", stringAddresses)
 
 	return individualIPs, stringAddresses, nil
+}
+
+type dnsResult struct {
+	index int
+	token string
+	ips   []net.IP
+	err   error
+}
+
+func addDNSTokens(tokens []string, builder *netaddr.IPSetBuilder) error {
+	if len(tokens) == 0 {
+		return nil
+	}
+
+	results := make(chan dnsResult, len(tokens))
+	lookup := lookupIP
+
+	for index, token := range tokens {
+		go func(index int, token string) {
+			ips, err := lookup(token)
+			results <- dnsResult{index: index, token: token, ips: ips, err: err}
+		}(index, token)
+	}
+
+	orderedResults := make([]dnsResult, len(tokens))
+	for range tokens {
+		result := <-results
+		orderedResults[result.index] = result
+	}
+
+	for _, result := range orderedResults {
+		if result.err != nil {
+			return fmt.Errorf("failed to resolve DNS target '%s': %w", result.token, result.err)
+		}
+
+		added := false
+		for _, resolvedIP := range result.ips {
+			if resolvedIP == nil {
+				continue
+			}
+
+			ip, ok := netaddr.FromStdIP(resolvedIP)
+			if !ok {
+				logger.Warning(fmt.Sprintf("Skipping unusable DNS result '%s' for target '%s'", resolvedIP, result.token))
+				continue
+			}
+
+			builder.Add(ip)
+			added = true
+			logger.Debug(fmt.Sprintf("Added DNS target '%s' result '%s' to builder.", result.token, ip))
+		}
+
+		if !added {
+			return fmt.Errorf("DNS target '%s' resolved to no usable IP addresses", result.token)
+		}
+	}
+
+	return nil
 }
 
 func GenerateRandomFileName(length int) string {

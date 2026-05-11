@@ -33,6 +33,7 @@ Run `coordinate --help` for the generated flag list. The most common flags are:
 - `-D, --download`: download `remote_path` or `remote_path;local_subdir`; repeatable.
 - `-o, --outfile-fmt`: write stdout under `output/` with `%i%`, `%h%`, `%s%`.
 - `-S, --sudo`: try sudo when the user is not root.
+- `-m, --max-hosts`: limit concurrent host connections; `0` means unlimited.
 - `-U, --use-config`: read credentials from `config.json`.
 
 ## EXAMPLES

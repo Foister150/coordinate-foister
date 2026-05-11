@@ -23,6 +23,8 @@ import (
 	"github.com/LanodonF/coordinate-foister/internal/utils"
 )
 
+var winBannerRe = regexp.MustCompile(`(?i)windows|winssh`)
+
 func SsherWrapper(i Instance, client *goph.Client) {
 	logger.Debug(fmt.Sprintf("Starting SsherWrapper for instance: %+v", i))
 	var wg sync.WaitGroup
@@ -61,7 +63,7 @@ func SsherWrapper(i Instance, client *goph.Client) {
 
 	// If only uploading/downloading (no scripts or commands), we're done
 	if len(Commands) == 0 && len(Scripts) == 0 {
-		TotalRuns++
+		IncrementTotalRuns()
 		return
 	}
 
@@ -88,30 +90,37 @@ func SsherWrapper(i Instance, client *goph.Client) {
 		return
 	}
 
-	// Handle scripts (existing logic)
-	first := true
-	for _, path := range Scripts {
-		logger.Debug(fmt.Sprintf("Processing script path: %s", path))
-		var Script string
-		i.Script = path
-
-		ScriptContents, err := os.ReadFile(path)
-		if err != nil {
-			logger.Crit(i, errors.New("Error reading "+i.Script+": "+err.Error()))
-			continue
+	// Handle scripts
+	if len(Scripts) > 0 {
+		scriptLimit := *Threads
+		if scriptLimit < 1 {
+			scriptLimit = 1
 		}
-		for _, cmd := range EnvironCmds {
-			Script += fmt.Sprintf("%s ", cmd)
-		}
-		Script += string(ScriptContents)
+		sem := make(chan struct{}, scriptLimit)
 
-		for t := 0; t < *Threads && t < len(Scripts); t++ {
-			if first {
-				logger.Debug("Launching first thread for script execution.")
-				first = false
+		for _, path := range Scripts {
+			logger.Debug(fmt.Sprintf("Processing script path: %s", path))
+			var Script string
+			i.Script = path
+
+			scriptContents, ok := ScriptContentsMap[path]
+			if !ok {
+				logger.Crit(i, errors.New("Script not pre-loaded: "+path))
+				continue
 			}
+			for _, cmd := range EnvironCmds {
+				Script += fmt.Sprintf("%s ", cmd)
+			}
+			Script += scriptContents
+
+			sem <- struct{}{}
 			wg.Add(1)
-			go ssher(i, client, Script, &wg)
+			currentI := i
+			currentScript := Script
+			go func() {
+				defer func() { <-sem }()
+				ssher(currentI, client, currentScript, &wg)
+			}()
 			i.ID++
 		}
 	}
@@ -129,7 +138,7 @@ func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.Wait
 	output, err := client.Run("echo a ; asdfhasdf")
 	if len(output) == 0 {
 		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
-		BrokenHosts = append(BrokenHosts, i.IP)
+		AppendBrokenHost(i.IP)
 		return
 	}
 
@@ -192,9 +201,9 @@ func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.Wait
 	if err != nil {
 		if strings.Contains(err.Error(), "context deadline exceeded") {
 			if len(i.Hostname) > 0 {
-				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Command timed out on %s", i.Hostname))
+				AppendAnnoyingErr(fmt.Sprintf("Command timed out on %s", i.Hostname))
 			} else {
-				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Command timed out on %s", i.IP))
+				AppendAnnoyingErr(fmt.Sprintf("Command timed out on %s", i.IP))
 			}
 		} else {
 			logger.Err(fmt.Sprintf("%s: Error running command: %s\n", i.IP, err))
@@ -215,8 +224,8 @@ func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.Wait
 		}
 	}
 
-	TotalRuns++
-	logger.Debug(fmt.Sprintf("Total runs incremented: %d", TotalRuns))
+	totalRuns := IncrementTotalRuns()
+	logger.Debug(fmt.Sprintf("Total runs incremented: %d", totalRuns))
 }
 
 func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
@@ -231,7 +240,7 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 	output, err := client.Run("echo a ; asdfhasdf")
 	if len(output) == 0 {
 		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
-		BrokenHosts = append(BrokenHosts, i.IP)
+		AppendBrokenHost(i.IP)
 		return
 	}
 
@@ -311,9 +320,9 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 	if err != nil {
 		if strings.Contains(err.Error(), "context deadline exceeded") {
 			if len(i.Hostname) > 0 {
-				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("%s timed out on %s", i.Script, i.Hostname))
+				AppendAnnoyingErr(fmt.Sprintf("%s timed out on %s", i.Script, i.Hostname))
 			} else {
-				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("%s timed out on %s", i.Script, i.IP))
+				AppendAnnoyingErr(fmt.Sprintf("%s timed out on %s", i.Script, i.IP))
 			}
 		} else {
 			logger.Err(fmt.Sprintf("%s: Error running script: %s\n", i.IP, err))
@@ -335,8 +344,8 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 	os.Remove(filename)
 	logger.Debug(fmt.Sprintf("Removed temporary file: %s", filename))
 
-	TotalRuns++
-	logger.Debug(fmt.Sprintf("Total runs incremented: %d", TotalRuns))
+	totalRuns := IncrementTotalRuns()
+	logger.Debug(fmt.Sprintf("Total runs incremented: %d", totalRuns))
 }
 
 // UploadToRemote uploads local files/directories to remote hosts.
@@ -746,8 +755,7 @@ func IsValidPort(host string, port int) bool {
 	defer conn.Close()
 
 	banner, _ := bufio.NewReader(conn).ReadString('\n')
-	regex := regexp.MustCompile(`(?i)windows|winssh`)
-	isValid := !regex.MatchString(banner)
+	isValid := !winBannerRe.MatchString(banner)
 	logger.Debug(fmt.Sprintf("Port %d validity on host %s: %t", port, host, isValid))
 	return isValid
 }

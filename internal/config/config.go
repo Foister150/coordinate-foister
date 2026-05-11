@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/LanodonF/coordinate-foister/internal/logger"
 )
@@ -14,7 +15,10 @@ type ConfigEntry struct {
 	Password string
 }
 
-var ConfigEntries = []ConfigEntry{}
+var (
+	ConfigEntries = []ConfigEntry{}
+	configMu      sync.Mutex
+)
 
 func ReadConfig() error {
 	ConfigFilePath := "config.json"
@@ -31,18 +35,32 @@ func ReadConfig() error {
 	}
 	defer file.Close()
 
+	var entries []ConfigEntry
 	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&ConfigEntries)
+	err = decoder.Decode(&entries)
 	if err != nil {
 		logger.Err(fmt.Sprintf("Error decoding configuration file '%s': %v", ConfigFilePath, err))
 		return err
 	}
 
-	logger.Info(fmt.Sprintf("Successfully loaded configuration from '%s'. Entries: %d", ConfigFilePath, len(ConfigEntries)))
+	configMu.Lock()
+	ConfigEntries = entries
+	configMu.Unlock()
+
+	logger.Info(fmt.Sprintf("Successfully loaded configuration from '%s'. Entries: %d", ConfigFilePath, len(entries)))
 	return nil
 }
 
+func ConfigEntriesSnapshot() []ConfigEntry {
+	configMu.Lock()
+	defer configMu.Unlock()
+	return append([]ConfigEntry(nil), ConfigEntries...)
+}
+
 func UpdateEntry(entry ConfigEntry) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	for i, e := range ConfigEntries {
 		if e.IP == entry.IP {
 			ConfigEntries[i] = entry
@@ -53,6 +71,9 @@ func UpdateEntry(entry ConfigEntry) {
 }
 
 func GetEntryByIP(ip string) ConfigEntry {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	for _, e := range ConfigEntries {
 		if e.IP == ip {
 			return e
@@ -62,6 +83,9 @@ func GetEntryByIP(ip string) ConfigEntry {
 }
 
 func DeleteEntryByIP(ip string) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	for i, e := range ConfigEntries {
 		if e.IP == ip {
 			ConfigEntries = append(ConfigEntries[:i], ConfigEntries[i+1:]...)
@@ -75,7 +99,8 @@ func SaveConfig() error {
 
 	logger.Debug("Attempting to save configuration file...")
 
-	data, err := json.MarshalIndent(ConfigEntries, "", "  ")
+	entries := ConfigEntriesSnapshot()
+	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		logger.Err(fmt.Sprintf("Error marshaling configuration to JSON: %v", err))
 		return err

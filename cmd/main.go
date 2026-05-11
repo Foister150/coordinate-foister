@@ -28,6 +28,9 @@ func main() {
 		cli.PrintUsage()
 		return
 	}
+	if err := preloadScripts(); err != nil {
+		logger.Fatal(err)
+	}
 
 	logger.Debug(fmt.Sprintf("UseConfig flag: %v", *UseConfig))
 	if *UseConfig {
@@ -41,9 +44,10 @@ func main() {
 		useManualDeploy()
 	}
 
-	if len(BrokenHosts) != 0 {
-		logger.Debug(fmt.Sprintf("BrokenHosts detected: %v", BrokenHosts))
-		printBrokenHosts()
+	brokenHosts := BrokenHostsSnapshot()
+	if len(brokenHosts) != 0 {
+		logger.Debug(fmt.Sprintf("BrokenHosts detected: %v", brokenHosts))
+		printBrokenHosts(brokenHosts)
 	}
 
 	if *CreateConfig != "" || *ConfigOnly != "" {
@@ -51,28 +55,41 @@ func main() {
 		config.SaveConfig()
 	}
 
-	if len(AnnoyingErrs) > 0 {
+	annoyingErrs := AnnoyingErrsSnapshot()
+	if len(annoyingErrs) > 0 {
 		logger.Debug("Processing AnnoyingErrs...")
-		for _, conerr := range AnnoyingErrs {
+		for _, conerr := range annoyingErrs {
 			logger.Err(conerr)
 		}
 	}
 
-	logger.Info(fmt.Sprintf("Total hosts hit: %d\n", TotalRuns))
+	logger.Info(fmt.Sprintf("Total hosts hit: %d\n", TotalRunsValue()))
 	logger.Debug("Application execution completed.")
+}
+
+func preloadScripts() error {
+	for _, path := range Scripts {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("cannot read script %q: %w", path, err)
+		}
+		ScriptContentsMap[path] = string(data)
+	}
+	return nil
 }
 
 func useConfigDeploy() {
 	logger.Debug("Starting useConfigDeploy...")
 	config.ReadConfig()
 
-	if len(config.ConfigEntries) == 0 {
+	configEntries := config.ConfigEntriesSnapshot()
+	if len(configEntries) == 0 {
 		logger.Err("No entries in config file")
 		return
 	}
 
-	logger.Debug(fmt.Sprintf("Config entries found: %d", len(config.ConfigEntries)))
-	tempConfigEntries := config.ConfigEntries
+	logger.Debug(fmt.Sprintf("Config entries found: %d", len(configEntries)))
+	tempConfigEntries := configEntries
 
 	if *Targets != "" {
 		logger.Debug("Filtering config entries based on specified targets...")
@@ -96,11 +113,26 @@ func useConfigDeploy() {
 		logger.Debug(fmt.Sprintf("Filtered config entries: %d", len(tempConfigEntries)))
 	}
 
+	var sem chan struct{}
+	if *MaxHosts > 0 {
+		sem = make(chan struct{}, *MaxHosts)
+	}
+
 	var wg sync.WaitGroup
-	for _, Entry := range tempConfigEntries {
-		logger.Debug(fmt.Sprintf("Running config entry: %+v", Entry))
+	for _, entry := range tempConfigEntries {
+		logger.Debug(fmt.Sprintf("Running config entry: %+v", entry))
+		if sem != nil {
+			sem <- struct{}{}
+		}
 		wg.Add(1)
-		go runner.RunnerCred(Entry.IP, *Outfile, &wg, Entry.Username, Entry.Password)
+		go func(entry config.ConfigEntry) {
+			defer func() {
+				if sem != nil {
+					<-sem
+				}
+			}()
+			runner.RunnerCred(entry.IP, *Outfile, &wg, entry.Username, entry.Password)
+		}(entry)
 	}
 	wg.Wait()
 	logger.Debug("useConfigDeploy completed.")
@@ -165,20 +197,35 @@ func useManualDeploy() {
 		return
 	}
 
+	var sem chan struct{}
+	if *MaxHosts > 0 {
+		sem = make(chan struct{}, *MaxHosts)
+	}
+
 	var wg sync.WaitGroup
 	for _, address := range Addresses {
 		logger.Debug(fmt.Sprintf("Deploying to address: %s", address.String()))
+		if sem != nil {
+			sem <- struct{}{}
+		}
 		wg.Add(1)
-		go runner.RunnerBf(address.String(), *Outfile, &wg)
+		go func(addr string) {
+			defer func() {
+				if sem != nil {
+					<-sem
+				}
+			}()
+			runner.RunnerBf(addr, *Outfile, &wg)
+		}(address.String())
 	}
 	wg.Wait()
 	logger.Debug("useManualDeploy completed.")
 }
 
-func printBrokenHosts() {
+func printBrokenHosts(hosts []string) {
 	logger.Debug("Printing broken hosts...")
 	logger.Err("The following hosts had janky ssh and should be configured manually:")
-	for _, host := range BrokenHosts {
+	for _, host := range hosts {
 		logger.Err(host)
 	}
 	logger.Debug("Broken hosts printed.")

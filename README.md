@@ -84,6 +84,7 @@ execution:
   -S, --sudo                attempt sudo escalation if the SSH user is not root
   -T, --timeout SECONDS     time limit per script or command (default: 30)
   -l, --limit THREADS       thread limit per IP (default: 3)
+  -m, --max-hosts HOSTS     max concurrent host connections (0 = unlimited)
   -n, --no-validate         skip shell/script completion validation
 
 file transfer:

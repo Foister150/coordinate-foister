@@ -46,7 +46,7 @@ func keyAuth() (goph.Auth, string, func(), error) {
 func handleSSHConnection(i Instance, client *goph.Client, err error) bool {
 	if err != nil {
 		logger.ErrExtra(i, fmt.Sprintf("Error while connecting to %s: %s", i.IP, err))
-		AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Error while connecting to %s: %s", i.IP, err))
+		AppendAnnoyingErr(fmt.Sprintf("Error while connecting to %s: %s", i.IP, err))
 		return false
 	}
 	defer client.Close()
@@ -63,11 +63,6 @@ func attemptSSH(ip, outfile, username, password string) bool {
 		Outfile:  outfile,
 		Username: username,
 		Password: password,
-	}
-
-	if !ssh.IsValidPort(i.IP, *Port) {
-		logger.Debug(fmt.Sprintf("Port %d is invalid or closed on host %s", *Port, i.IP))
-		return false
 	}
 
 	// Try standard Password authentication first
@@ -164,9 +159,15 @@ func RunnerCred(ip string, outfile string, w *sync.WaitGroup, username, password
 	defer w.Done()
 	logger.Debug(fmt.Sprintf("Starting RunnerCred for IP: %s, username: %s", ip, username))
 
+	if !ssh.IsValidPort(ip, *Port) {
+		logger.Debug(fmt.Sprintf("Port %d is invalid or closed on host %s", *Port, ip))
+		AppendAnnoyingErr(fmt.Sprintf("Port %d closed on: %s", *Port, ip))
+		return
+	}
+
 	if !attemptSSH(ip, outfile, username, password) {
 		logger.Err(fmt.Sprintf("Login attempt failed for IP: %s, username: %s", ip, username))
-		AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Login attempt failed to: %s", ip))
+		AppendAnnoyingErr(fmt.Sprintf("Login attempt failed to: %s", ip))
 	} else {
 		logger.Debug(fmt.Sprintf("Login succeeded for IP: %s, username: %s", ip, username))
 	}

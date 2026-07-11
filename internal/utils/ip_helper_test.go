@@ -39,6 +39,25 @@ func TestParseIPsPreservesExistingTargetFormats(t *testing.T) {
 	assertIPStrings(t, ips, want)
 }
 
+func TestParseIPsAcceptsFullAddressRange(t *testing.T) {
+	ips, ranges, err := ParseIPs("10.10.20.201-10.10.20.220")
+	if err != nil {
+		t.Fatalf("ParseIPs() error = %v", err)
+	}
+	if len(ips) != 20 || ips[0].String() != "10.10.20.201" || ips[len(ips)-1].String() != "10.10.20.220" {
+		t.Fatalf("ips = %v, want inclusive .201-.220 range", ips)
+	}
+	if len(ranges) != 1 || ranges[0] != "10.10.20.201-10.10.20.220" {
+		t.Fatalf("ranges = %v, want compact full-address range", ranges)
+	}
+}
+
+func TestParseIPsRejectsReversedFullAddressRange(t *testing.T) {
+	if _, _, err := ParseIPs("10.10.20.220-10.10.20.201"); err == nil {
+		t.Fatal("ParseIPs() error = nil, want reversed-range error")
+	}
+}
+
 func TestParseIPsResolvesDNSName(t *testing.T) {
 	withLookupIP(t, func(host string) ([]net.IP, error) {
 		if host != "alpha.test" {
@@ -146,6 +165,108 @@ func TestParseIPsReturnsErrorWhenDNSHasNoUsableIPs(t *testing.T) {
 	}
 }
 
+func TestParseIPsRejectsOversizedTargetsByDefault(t *testing.T) {
+	tests := []struct {
+		name      string
+		targets   string
+		wantCount string
+	}{
+		{name: "IPv4 slash zero", targets: "0.0.0.0/0", wantCount: "4294967296"},
+		{name: "IPv6 slash 64", targets: "2001:db8::/64", wantCount: "18446744073709551616"},
+		{name: "full octet range", targets: "0-255.0-255.0-255.0-255", wantCount: "4294967296"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := ParseIPs(tt.targets)
+			if err == nil {
+				t.Fatal("ParseIPs() error = nil, want maximum-target error")
+			}
+			if !strings.Contains(err.Error(), tt.wantCount) || !strings.Contains(err.Error(), "--max-targets=65536") {
+				t.Fatalf("ParseIPs() error = %q, want count %s and limit context", err, tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestParseIPsDefaultLimitAllowsNormalSlash24(t *testing.T) {
+	ips, ranges, err := ParseIPs("192.0.2.0/24")
+	if err != nil {
+		t.Fatalf("ParseIPs() error = %v", err)
+	}
+	if len(ips) != 256 {
+		t.Fatalf("len(ips) = %d, want 256", len(ips))
+	}
+	if len(ranges) != 1 || ranges[0] != "192.0.2.0-192.0.2.255" {
+		t.Fatalf("ranges = %v, want compact /24 range", ranges)
+	}
+}
+
+func TestParseIPsWithLimitHonorsExactBoundary(t *testing.T) {
+	ips, _, err := ParseIPsWithLimit("192.0.2.1-4", 4)
+	if err != nil {
+		t.Fatalf("ParseIPsWithLimit(exact limit) error = %v", err)
+	}
+	assertIPStrings(t, ips, []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"})
+
+	_, _, err = ParseIPsWithLimit("192.0.2.1-5", 4)
+	if err == nil {
+		t.Fatal("ParseIPsWithLimit(limit+1) error = nil, want maximum-target error")
+	}
+	if !strings.Contains(err.Error(), "expands to 5 addresses") || !strings.Contains(err.Error(), "--max-targets=4") {
+		t.Fatalf("ParseIPsWithLimit(limit+1) error = %q, want count and limit context", err)
+	}
+}
+
+func TestParseIPsWithLimitCountsAfterDeduplication(t *testing.T) {
+	ips, ranges, err := ParseIPsWithLimit("192.0.2.2,192.0.2.0/30,192.0.2.1,192.0.2.0/31", 4)
+	if err != nil {
+		t.Fatalf("ParseIPsWithLimit() error = %v", err)
+	}
+	assertOrderedIPStrings(t, ips, []string{"192.0.2.0", "192.0.2.1", "192.0.2.2", "192.0.2.3"})
+	if len(ranges) != 1 || ranges[0] != "192.0.2.0-192.0.2.3" {
+		t.Fatalf("ranges = %v, want one deduplicated range", ranges)
+	}
+}
+
+func TestParseIPsWithLimitHandlesIPv6Cardinality(t *testing.T) {
+	ips, _, err := ParseIPsWithLimit("2001:db8::/120", 256)
+	if err != nil {
+		t.Fatalf("ParseIPsWithLimit(exact IPv6 limit) error = %v", err)
+	}
+	if len(ips) != 256 {
+		t.Fatalf("len(ips) = %d, want 256", len(ips))
+	}
+
+	_, _, err = ParseIPsWithLimit("2001:db8::/120", 255)
+	if err == nil {
+		t.Fatal("ParseIPsWithLimit(IPv6 limit+1) error = nil, want maximum-target error")
+	}
+	if !strings.Contains(err.Error(), "expands to 256 addresses") {
+		t.Fatalf("ParseIPsWithLimit() error = %q, want exact IPv6 cardinality", err)
+	}
+}
+
+func TestParseIPsWithLimitRejectsNonpositiveLimits(t *testing.T) {
+	for _, limit := range []int64{0, -1} {
+		_, _, err := ParseIPsWithLimit("192.0.2.1", limit)
+		if err == nil {
+			t.Fatalf("ParseIPsWithLimit(limit=%d) error = nil, want validation error", limit)
+		}
+		if !strings.Contains(err.Error(), "must be greater than zero") {
+			t.Fatalf("ParseIPsWithLimit(limit=%d) error = %q, want positive-limit context", limit, err)
+		}
+	}
+}
+
+func TestParseIPsEnumeratesMaximumEndpointAddresses(t *testing.T) {
+	ips, _, err := ParseIPsWithLimit("255.255.255.255,ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", 2)
+	if err != nil {
+		t.Fatalf("ParseIPsWithLimit() error = %v", err)
+	}
+	assertOrderedIPStrings(t, ips, []string{"255.255.255.255", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"})
+}
+
 func TestParseIPsLiveDNSForEvilblackcat(t *testing.T) {
 	if os.Getenv("COORDINATE_LIVE_DNS_TEST") == "" {
 		t.Skip("set COORDINATE_LIVE_DNS_TEST=1 to run live DNS smoke test")
@@ -187,6 +308,20 @@ func assertIPStrings(t *testing.T, got []netaddr.IP, want []string) {
 	for _, ip := range want {
 		if !gotSet[ip] {
 			t.Fatalf("got IPs %v, want %v", gotStrings, want)
+		}
+	}
+}
+
+func assertOrderedIPStrings(t *testing.T, got []netaddr.IP, want []string) {
+	t.Helper()
+
+	gotStrings := ipStrings(got)
+	if len(gotStrings) != len(want) {
+		t.Fatalf("got IPs %v, want %v", gotStrings, want)
+	}
+	for i := range want {
+		if gotStrings[i] != want[i] {
+			t.Fatalf("got IPs %v, want ordered IPs %v", gotStrings, want)
 		}
 	}
 }

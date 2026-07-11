@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Test, audit, and cross-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.3
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "${unformatted}" ]]; then
+            echo "The following Go files need gofmt:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+      - name: Check reachable vulnerabilities
+        run: govulncheck ./...
+
+      - name: Cross-build release targets
+        shell: bash
+        run: |
+          output_dir="${RUNNER_TEMP}/coordinate-builds"
+          mkdir -p "${output_dir}"
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+            "freebsd amd64"
+            "openbsd amd64"
+            "netbsd amd64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<< "${target}"
+            suffix=""
+            if [[ "${goos}" == "windows" ]]; then
+              suffix=".exe"
+            fi
+
+            output="${output_dir}/coordinate-${goos}-${goarch}${suffix}"
+            echo "Building ${goos}/${goarch}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+              go build -trimpath -ldflags="-s -w" -o "${output}" ./cmd
+          done

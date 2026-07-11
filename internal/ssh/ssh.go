@@ -213,6 +213,9 @@ func SsherWrapper(i Instance, client *goph.Client) HostWorkResult {
 	if len(Commands) > 0 {
 		result.PayloadsRequested = len(Commands)
 	}
+	if len(ScheduledCommands) > 0 {
+		result.PayloadsRequested = len(ScheduledCommands)
+	}
 	var wg sync.WaitGroup
 	prepared := make(map[string]string, len(Scripts))
 	for _, path := range Scripts {
@@ -237,7 +240,7 @@ func SsherWrapper(i Instance, client *goph.Client) HostWorkResult {
 	// Shell validation and sudo authentication are host capabilities, not
 	// payload properties. Probe each once before starting concurrent work so a
 	// bad sudo password cannot trigger several simultaneous PAM failures.
-	hasPayloads := len(Commands) > 0 || len(Scripts) > 0
+	hasPayloads := len(Commands) > 0 || len(Scripts) > 0 || len(ScheduledCommands) > 0
 	useSudo := false
 	if hasPayloads {
 		if !shellUsable(i, client) {
@@ -293,7 +296,7 @@ func SsherWrapper(i Instance, client *goph.Client) HostWorkResult {
 	}
 
 	// If only uploading/downloading (no scripts or commands), we're done
-	if len(Commands) == 0 && len(Scripts) == 0 {
+	if len(Commands) == 0 && len(Scripts) == 0 && len(ScheduledCommands) == 0 {
 		return result
 	}
 
@@ -328,6 +331,25 @@ func SsherWrapper(i Instance, client *goph.Client) HostWorkResult {
 			result.Payloads = append(result.Payloads, outcome)
 		}
 		logger.Debug("Finished executing all commands in SsherWrapper.")
+		return result
+	}
+
+	if len(ScheduledCommands) > 0 {
+		// Each installation rewrites one tagged crontab line. Keep these
+		// sequential so concurrent crontab reads cannot overwrite each other.
+		backend, err := selectScheduler(i, client, useSudo)
+		if err != nil {
+			result.Failures = append(result.Failures, err)
+			logger.ErrExtra(i, fmt.Sprintf("failed to select scheduler on %s: %s", hostLabel(i), err))
+			return result
+		}
+		logger.DebugExtra(i, fmt.Sprintf("Using %s scheduler", backend))
+		for index, command := range ScheduledCommands {
+			label := fmt.Sprintf("schedule-%04d", index+1)
+			err := installScheduledCommand(i, client, command, ScheduleEvery, useSudo, backend)
+			result.Payloads = append(result.Payloads, OperationResult{Kind: "schedule", Label: label, Err: err})
+		}
+		logger.Debug("Finished installing all scheduled commands in SsherWrapper.")
 		return result
 	}
 

@@ -57,6 +57,27 @@ func TestCLIUsageErrorsAndHelpStreams(t *testing.T) {
 			notStderr:  []string{"CLI_SECRET"},
 		},
 		{
+			name:       "scheduled command requires interval",
+			args:       []string{"-t", "192.0.2.1", "-u", "root", "-p", "CLI_SECRET", "--schedule", "true"},
+			wantCode:   2,
+			wantStderr: []string{"--interval must be"},
+			notStderr:  []string{"CLI_SECRET"},
+		},
+		{
+			name:       "scheduled command cannot combine with direct command",
+			args:       []string{"-t", "192.0.2.1", "-u", "root", "-p", "CLI_SECRET", "--schedule", "true", "--interval", "5m", "-x", "hostname"},
+			wantCode:   2,
+			wantStderr: []string{"cannot combine scripts, --command, and --schedule"},
+			notStderr:  []string{"CLI_SECRET"},
+		},
+		{
+			name:       "invalid scheduler is rejected",
+			args:       []string{"-t", "192.0.2.1", "-u", "root", "-p", "CLI_SECRET", "--schedule", "true", "--interval", "5m", "--scheduler", "at"},
+			wantCode:   2,
+			wantStderr: []string{"--scheduler must be one of auto, systemd, or cron"},
+			notStderr:  []string{"CLI_SECRET"},
+		},
+		{
 			name:       "ambiguous attached key path",
 			args:       []string{"-k/tmp/id_ed25519"},
 			wantCode:   2,

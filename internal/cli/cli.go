@@ -47,6 +47,26 @@ func Init() error {
 
 	Timeout = time.Duration(*Timelimit) * time.Second
 	TransferTimeout = time.Duration(*TransferTimelimit) * time.Second
+	ScheduledCommands = *ScheduledCommand
+	if len(ScheduledCommands) > 0 {
+		interval, err := parseScheduleInterval(*ScheduleInterval)
+		if err != nil {
+			return err
+		}
+		ScheduleEvery = interval
+		backend, err := parseScheduler(*Scheduler)
+		if err != nil {
+			return err
+		}
+		ScheduleBackend = backend
+	} else if flag.CommandLine.Changed("interval") {
+		return fmt.Errorf("--interval requires at least one --schedule command")
+	} else if flag.CommandLine.Changed("scheduler") {
+		return fmt.Errorf("--scheduler requires at least one --schedule command")
+	} else {
+		ScheduleEvery = 0
+		ScheduleBackend = ""
+	}
 
 	Scripts = flag.Args()
 	Commands = *Command
@@ -59,6 +79,26 @@ func Init() error {
 		return fmt.Errorf("prepare output directory: %w", err)
 	}
 	return nil
+}
+
+// parseScheduleInterval accepts intervals usable by systemd timers. The cron
+// backend imposes further portable-five-field constraints only when selected.
+func parseScheduleInterval(value string) (time.Duration, error) {
+	interval, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || interval < time.Second {
+		return 0, fmt.Errorf("--interval must be a positive Go duration (for example 5m, 90m, or 1h)")
+	}
+	return interval, nil
+}
+
+func parseScheduler(value string) (string, error) {
+	backend := strings.ToLower(strings.TrimSpace(value))
+	switch backend {
+	case "auto", "systemd", "cron":
+		return backend, nil
+	default:
+		return "", fmt.Errorf("--scheduler must be one of auto, systemd, or cron")
+	}
 }
 
 func validateNumericFlags(port, timeoutSeconds, perHostLimit, maxHosts int, maxTargets int64, transferTimeoutSeconds int) error {
@@ -148,7 +188,7 @@ func normalizeOptionalKeyArgs(args []string) ([]string, error) {
 }
 
 func InputCheck() error {
-	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "" && *ConfigOnly == "" && len(*DownloadDirs) == 0 && len(*UploadFiles) == 0) || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
+	if (len(Scripts) == 0 && len(Commands) == 0 && len(ScheduledCommands) == 0 && *CreateConfig == "" && *ConfigOnly == "" && len(*DownloadDirs) == 0 && len(*UploadFiles) == 0) || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
 		return fmt.Errorf("missing target(s), script(s)/command(s), and/or username(s)")
 	}
 	if *UseConfig && (*Usernames != "" || *Passwords != "" || flag.CommandLine.Changed("key") || *ConfigOnly != "" || *CreateConfig != "") {
@@ -161,9 +201,24 @@ func InputCheck() error {
 		return err
 	}
 
-	// Ensure scripts and commands are mutually exclusive
-	if len(Scripts) > 0 && len(Commands) > 0 {
-		return fmt.Errorf("cannot specify both scripts and commands; use either scripts or --command")
+	// Execution modes have distinct semantics: scripts and commands run now,
+	// while scheduled commands only install recurring jobs.
+	executionModes := 0
+	for _, selected := range []bool{len(Scripts) > 0, len(Commands) > 0, len(ScheduledCommands) > 0} {
+		if selected {
+			executionModes++
+		}
+	}
+	if executionModes > 1 {
+		if len(Scripts) > 0 && len(Commands) > 0 && len(ScheduledCommands) == 0 {
+			return fmt.Errorf("cannot specify both scripts and commands; use either scripts or --command")
+		}
+		return fmt.Errorf("cannot combine scripts, --command, and --schedule; choose one execution mode")
+	}
+	for _, command := range ScheduledCommands {
+		if strings.TrimSpace(command) == "" {
+			return fmt.Errorf("--schedule commands must not be empty")
+		}
 	}
 	if err := validateLocalInputs(Scripts, *UploadFiles); err != nil {
 		return err
@@ -236,8 +291,9 @@ USAGE
   coordinate -t <targets> -u <users> -x <command>
   coordinate -U [-t <targets>] [script ...]
 
-  Scripts and direct commands (-x) are mutually exclusive. Scripts are uploaded,
-  run once per host, then removed. Uploads/downloads run before execution.
+  Scripts, direct commands (-x), and scheduled commands (--schedule) are mutually
+  exclusive. Scripts are uploaded, run once per host, then removed.
+  Uploads/downloads run before execution or schedule installation.
 
 TARGETING
   -t, --targets TARGETS   DNS names or IPs: singles, comma lists, ranges, CIDR
@@ -254,6 +310,9 @@ AUTHENTICATION
 
 EXECUTION
   -x, --command COMMAND   run direct command(s) instead of scripts (repeatable)
+      --schedule COMMAND  install recurring command(s) instead of running now
+      --interval DURATION required with --schedule (e.g. 5m, 90m, 1h)
+      --scheduler BACKEND auto (systemd then cron), systemd, or cron
   -E, --env KEY=VALUE     export an environment value; repeat for multiple values
   -S, --sudo              escalate via sudo when the SSH user is not root
   -T, --timeout SECONDS   positive time limit per script/command (default 30)
@@ -288,6 +347,9 @@ EXAMPLES
 
   Run a command with ssh-agent keys across a /24:
     coordinate -t 10.10.1.0/24 -u admin -k -x 'hostname && whoami'
+
+  Reinstall a check every five minutes (use -S for root's crontab):
+    coordinate -t 10.10.1.5 -u admin -k -S --schedule '/usr/local/bin/check-firewall' --interval 5m
 
   Push a toolkit to a user-writable path, then inspect it with sudo:
     coordinate -t 172.16.1.15 -u ops -p 'secret' -S -F './tools;/tmp/tools' -x 'ls -la /tmp/tools'

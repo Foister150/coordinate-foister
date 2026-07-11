@@ -17,6 +17,7 @@ I do not claim to have created or own this project, but it is my goal to keep it
 - Authenticate with password lists, prompted passwords, SSH agent keys, SSH private keys, or saved config entries.
 - Bounded, parallel host fan-out (`--max-hosts`) for fast, stable sweeps of large ranges instead of an unbounded goroutine per IP.
 - Run shell scripts or direct commands across many hosts, each script run once per host.
+- Install managed recurring commands through systemd timers or portable five-field crontabs on Unix-like targets.
 - Upload files or directories to remote hosts, and download remote directories into local per-host output folders.
 - rsync-accelerated transfers when available — installed automatically on the remote when permitted — with automatic streaming tar/SFTP fallback.
 - Broad Unix compatibility: payloads run under POSIX `sh` (works with csh/tcsh login shells on the BSDs) and sudo passwords are fed over stdin rather than the command line.
@@ -75,8 +76,11 @@ AUTHENTICATION
 
 EXECUTION
   -x, --command COMMAND   run direct command(s) instead of scripts (repeatable)
+      --schedule COMMAND  install recurring command(s) instead of running now
+      --interval DURATION required with --schedule (e.g. 5m, 90m, 1h)
+      --scheduler BACKEND auto (systemd then cron), systemd, or cron
   -E, --env KEY=VALUE     export an environment value; repeat for multiple values
-  -S, --sudo              require sudo for commands/scripts when not root
+  -S, --sudo              require sudo for commands/scripts/schedules when not root
   -T, --timeout SECONDS   positive time limit per script/command (default 30)
   -l, --limit N           per-host payload concurrency, 1..1024 (default 3)
   -n, --no-validate       skip the shell-usability probe before running
@@ -103,7 +107,7 @@ CONFIG HELPERS
   -I, -A, -c              unavailable legacy password-helper options
 ```
 
-Scripts and direct commands are mutually exclusive. Invalid flags and invalid
+Scripts, direct commands, and scheduled commands are mutually exclusive. Invalid flags and invalid
 flag combinations print a concise diagnostic to stderr and exit with status 2;
 `--help` prints the grouped reference to stdout and exits successfully.
 Runtime failures exit with status 1, including authentication exhaustion,
@@ -211,6 +215,12 @@ Run a direct command with a key in a custom location:
 coordinate -t 10.10.1.0/24 -u admin -k="$HOME/.ssh/id_ed25519" -x 'hostname && whoami'
 ```
 
+Install a root-owned recurring firewall check every five minutes:
+
+```sh
+coordinate -t 10.10.1.5 -u admin -k -S --schedule '/usr/local/bin/check-firewall' --interval 5m
+```
+
 Upload a local tool directory and run a command:
 
 ```sh
@@ -261,6 +271,7 @@ Example `env.json`:
 - Passwords supplied on the command line may be visible to local process inspection.
 - `config.json` stores credentials in plaintext. Keep it out of git and restrict local filesystem access.
 - `-F`/`-D` may automatically install rsync with the remote package manager. Use `--no-rsync` when package mutation is not acceptable.
+- `--schedule` uses `--scheduler=auto` by default: with root privileges it prefers a usable systemd manager, then falls back to `crontab`. Force `--scheduler=systemd` or `--scheduler=cron` when deterministic backend selection matters. Systemd uses root-owned units and supports arbitrary positive intervals; cron works on the BSDs, Solaris, Alpine, and non-systemd Linux but accepts only portable whole-minute/hour intervals that divide evenly into 24 hours. Cron installs an owner-only script in `~/.coordinate/` and an idempotent, tagged crontab entry; `--sudo` installs into root's crontab. Cron output is discarded to avoid mail, while systemd output goes to the journal. `--timeout` bounds only schedule installation; use a timeout mechanism in the scheduled command itself if required.
 - Downloaded directories and regular files are normalized to owner-only modes (`0700` and `0600`) instead of preserving remote permissions.
 - `--sudo` sends the authenticated password over SSH stdin, not in the remote command line. For a non-root login, failed sudo verification prevents commands and scripts from running unprivileged.
 - Privileged scripts are streamed into a root-owned, mode-restricted temporary directory before execution. Download extraction rejects links and special files rather than following them outside the destination.

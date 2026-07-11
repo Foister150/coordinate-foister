@@ -101,6 +101,37 @@ func TestValidateTransferTimeoutRejectsDurationOverflow(t *testing.T) {
 	}
 }
 
+func TestParseScheduleInterval(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  time.Duration
+		valid bool
+	}{
+		{value: "1m", want: time.Minute, valid: true},
+		{value: "15m", want: 15 * time.Minute, valid: true},
+		{value: "6h", want: 6 * time.Hour, valid: true},
+		{value: "7m", want: 7 * time.Minute, valid: true},
+		{value: "90m", want: 90 * time.Minute, valid: true},
+		{value: "30s", want: 30 * time.Second, valid: true},
+		{value: "500ms"},
+		{value: "0s"},
+		{value: "not-a-duration"},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseScheduleInterval(tt.value)
+			if tt.valid {
+				if err != nil || got != tt.want {
+					t.Fatalf("parseScheduleInterval(%q) = %v, %v; want %v, nil", tt.value, got, err, tt.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("parseScheduleInterval(%q) = %v, nil; want error", tt.value, got)
+			}
+		})
+	}
+}
+
 func TestValidateLocalInputs(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "script.sh")

@@ -181,6 +181,9 @@ func requestedHostWork() HostWorkResult {
 	if len(Commands) > 0 {
 		payloads = len(Commands)
 	}
+	if len(ScheduledCommands) > 0 {
+		payloads = len(ScheduledCommands)
+	}
 	transfers := 0
 	if len(*UploadFiles) > 0 {
 		transfers++

@@ -235,9 +235,15 @@ var (
 	UseConfig         = flag.BoolP("use-config", "U", false, "Use config.json. This has no error handling. Have fun.")
 	ConfigOnly        = flag.StringP("CO", "O", "", "Create a config from existing credentials without running password.sh. Pass the root password as value.")
 	Command           = flag.StringArrayP("command", "x", []string{}, "Execute command(s) directly instead of scripts")
+	ScheduledCommand  = flag.StringArray("schedule", []string{}, "Install command(s) as managed recurring cron jobs; requires --interval")
+	ScheduleInterval  = flag.String("interval", "", "Recurring interval (Go duration syntax, e.g. 5m or 90m)")
+	Scheduler         = flag.String("scheduler", "auto", "Scheduler for --schedule: auto, systemd, or cron")
 	NoRsync           = flag.Bool("no-rsync", false, "Never use rsync for uploads/downloads; always use the built-in streaming/SFTP transfer")
 	Scripts           = []string{}
 	Commands          = []string{}
+	ScheduledCommands = []string{}
+	ScheduleEvery     time.Duration
+	ScheduleBackend   string
 	UsernameList      = []string{}
 	PasswordList      = []string{}
 	EnvironCmds       = []string{}

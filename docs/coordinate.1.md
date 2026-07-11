@@ -10,6 +10,7 @@ coordinate - run commands, scripts, uploads, and downloads across SSH targets
 coordinate [options] [script ...]
 coordinate -t TARGETS -u USERS -p PASSWORDS script.sh
 coordinate -t TARGETS -u USERS -x "command"
+coordinate -t TARGETS -u USERS --schedule "command" --interval 5m
 coordinate -U [-t TARGETS] [script ...]
 ```
 
@@ -44,8 +45,11 @@ below by purpose.
 ### Execution
 
 - `-x, --command`: direct command; repeat for multiple commands.
+- `--schedule`: install a recurring command; repeat for multiple commands. It does not run the command immediately; all scheduled commands in one invocation use the same `--interval`.
+- `--interval`: required with `--schedule`. Accepts a positive Go duration of at least one second (for example `5m`, `90m`, or `1h`). Cron limits the interval formats it can represent portably.
+- `--scheduler`: `auto` (default), `systemd`, or `cron`. Auto prefers a usable root systemd manager and falls back to cron. `systemd` requires a root login or `--sudo`; an explicit backend fails if unavailable rather than falling back.
 - `-E, --env KEY=VALUE`: export one environment value; repeat the flag for multiple values.
-- `-S, --sudo`: require verified sudo escalation for commands/scripts when the SSH user is not root.
+- `-S, --sudo`: require verified sudo escalation for commands/scripts/schedules when the SSH user is not root. Scheduled commands are installed in root's crontab.
 - `-T, --timeout`: positive time limit in seconds for each script or command (default 30).
 - `-l, --limit`: maximum scripts/commands run concurrently on each host, 1 through 1024 (default 3). This is not a repeat count; each requested payload runs once.
 - `-n, --no-validate`: skip the shell-usability probe before running.
@@ -78,7 +82,7 @@ must match `[A-Za-z_][A-Za-z0-9_]*`. Values are passed
 literally, including spaces and shell metacharacters; quote the complete
 `KEY=VALUE` argument as needed to prevent the local shell from expanding it.
 
-Scripts and direct commands are mutually exclusive. Numeric options outside the
+Scripts, direct commands, and scheduled commands are mutually exclusive. Numeric options outside the
 ranges above are rejected.
 
 The default temporary path is computed using the operating system rather than
@@ -165,6 +169,7 @@ runtime/authentication/persistence failure, and 2 for invalid command usage.
 coordinate -t 192.168.1.10-20 -u root -p 'secret' ./audit.sh
 coordinate -t 10.10.1.0/24 -u admin -k -x 'hostname'
 coordinate -t 10.10.1.0/24 -u admin -k="$HOME/.ssh/id_ed25519" -x 'hostname'
+coordinate -t 10.10.1.5 -u admin -k -S --schedule '/usr/local/bin/check-firewall' --interval 5m
 coordinate -t 172.16.1.15 -u root -p 'secret' -D '/var/log;logs'
 ```
 
@@ -185,3 +190,15 @@ may install rsync remotely; use `--no-rsync` if package changes are unacceptable
 Password-mode rsync passes its secret through the child process environment,
 not its command line. Download extraction rejects links and special files, and
 downloaded directories/files are normalized to modes `0700`/`0600`.
+
+Scheduled commands default to `--scheduler=auto`: with root privileges,
+coordinate prefers a usable systemd manager and creates a root-owned service
+and timer; otherwise it uses `crontab`. Systemd timers support arbitrary
+positive intervals and retain output in the journal. Cron uses portable numeric
+five-field entries (not cron extensions), so it is available on the BSDs,
+Solaris, Alpine, and non-systemd Linux but only accepts compatible whole-minute
+or whole-hour intervals that divide evenly into 24 hours. The cron backend
+writes the command to an owner-only `~/.coordinate/` script and tags its
+crontab line so rerunning the same command updates it rather than duplicating
+it. Cron stdout/stderr is discarded to prevent cron mail; redirect inside the
+command to retain logs.

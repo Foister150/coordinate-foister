@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 var lookupIP = net.LookupIP
 
-func addTargetToSet(token string, builder *netaddr.IPSetBuilder) error {
+func addTargetToSet(token string, builder *netaddr.IPSetBuilder, maxTargets int64) error {
 	logger.Debug("addTargetToSet called with token:", token)
 
 	ip, ipErr := netaddr.ParseIP(token)
@@ -24,8 +25,12 @@ func addTargetToSet(token string, builder *netaddr.IPSetBuilder) error {
 
 	if isIPRangeToken(token) {
 		logger.Debug("Token identified as IP range")
-		return addIPRange(token, builder)
-	} else if strings.Contains(token, "/") {
+		return addIPRange(token, builder, maxTargets)
+	}
+	if handled, err := addFullIPRange(token, builder, maxTargets); handled {
+		return err
+	}
+	if strings.Contains(token, "/") {
 		logger.Debug("Token identified as CIDR")
 		return addCIDR(token, builder)
 	}
@@ -38,6 +43,39 @@ func addTargetToSet(token string, builder *netaddr.IPSetBuilder) error {
 
 	logger.Debug("Token identified as DNS name")
 	return addDNSTarget(token, builder)
+}
+
+// addFullIPRange accepts the documented start-end form in addition to the
+// per-octet shorthand handled by addIPRange (for example, 192.0.2.10-20).
+func addFullIPRange(token string, builder *netaddr.IPSetBuilder, maxTargets int64) (bool, error) {
+	if strings.Count(token, "-") != 1 {
+		return false, nil
+	}
+
+	startText, endText, _ := strings.Cut(token, "-")
+	start, startErr := netaddr.ParseIP(startText)
+	end, endErr := netaddr.ParseIP(endText)
+	if startErr != nil && endErr != nil {
+		return false, nil // A hyphenated DNS name, not an address range.
+	}
+	if startErr != nil || endErr != nil {
+		return true, fmt.Errorf("invalid IP range '%s'", token)
+	}
+	if start.BitLen() != end.BitLen() || start.Compare(end) > 0 {
+		return true, fmt.Errorf("invalid IP range '%s'", token)
+	}
+	if maxTargets <= 0 {
+		return true, fmt.Errorf("maximum target count must be greater than zero")
+	}
+
+	count := new(big.Int).Sub(ipToBigInt(end), ipToBigInt(start))
+	count.Add(count, big.NewInt(1))
+	if count.Cmp(big.NewInt(maxTargets)) > 0 {
+		return true, fmt.Errorf("target range '%s' expands to %s addresses, exceeding --max-targets=%d", token, count, maxTargets)
+	}
+
+	builder.AddRange(netaddr.IPRangeFrom(start, end))
+	return true, nil
 }
 
 func isIPRangeToken(token string) bool {
@@ -97,8 +135,11 @@ func isDigits(value string) bool {
 	return true
 }
 
-func addIPRange(token string, builder *netaddr.IPSetBuilder) error {
+func addIPRange(token string, builder *netaddr.IPSetBuilder, maxTargets int64) error {
 	logger.Debug("addIPRange called with token:", token)
+	if maxTargets <= 0 {
+		return fmt.Errorf("maximum target count must be greater than zero")
+	}
 
 	octets := strings.Split(token, ".")
 	if len(octets) != 4 {
@@ -117,13 +158,20 @@ func addIPRange(token string, builder *netaddr.IPSetBuilder) error {
 		logger.Debug(fmt.Sprintf("Octet %d expanded to: %v", i, octetRanges[i]))
 	}
 
-	expandedCount := 0
+	expandedCount := uint64(1)
+	for _, octetRange := range octetRanges {
+		expandedCount *= uint64(len(octetRange))
+	}
+	if expandedCount > uint64(maxTargets) { // #nosec G115 -- positivity is checked above.
+		return fmt.Errorf("target range '%s' expands to %d addresses, exceeding --max-targets=%d", token, expandedCount, maxTargets)
+	}
+
 	for _, o1 := range octetRanges[0] {
 		for _, o2 := range octetRanges[1] {
 			for _, o3 := range octetRanges[2] {
 				for _, o4 := range octetRanges[3] {
-					builder.Add(netaddr.IPv4(uint8(o1), uint8(o2), uint8(o3), uint8(o4)))
-					expandedCount++
+					// parseOctetRange rejects every value outside 0..255.
+					builder.Add(netaddr.IPv4(uint8(o1), uint8(o2), uint8(o3), uint8(o4))) // #nosec G115
 				}
 			}
 		}
@@ -216,10 +264,32 @@ func addDNSTarget(token string, builder *netaddr.IPSetBuilder) error {
 	return nil
 }
 
-func extractIPsAndRanges(ipSet *netaddr.IPSet) ([]netaddr.IP, []string) {
+func ipSetCardinality(ipSet *netaddr.IPSet) *big.Int {
+	total := new(big.Int)
+	one := big.NewInt(1)
+	for _, ipRange := range ipSet.Ranges() {
+		from := ipToBigInt(ipRange.From())
+		to := ipToBigInt(ipRange.To())
+		rangeSize := new(big.Int).Sub(to, from)
+		rangeSize.Add(rangeSize, one)
+		total.Add(total, rangeSize)
+	}
+	return total
+}
+
+func ipToBigInt(ip netaddr.IP) *big.Int {
+	if ip.Is4() {
+		value := ip.As4()
+		return new(big.Int).SetBytes(value[:])
+	}
+	value := ip.As16()
+	return new(big.Int).SetBytes(value[:])
+}
+
+func extractIPsAndRanges(ipSet *netaddr.IPSet, targetCount int) ([]netaddr.IP, []string) {
 	logger.Debug("extractIPsAndRanges called.")
 
-	var individualIPs []netaddr.IP
+	individualIPs := make([]netaddr.IP, 0, targetCount)
 	var stringAddresses []string
 
 	for _, r := range ipSet.Ranges() {
@@ -231,8 +301,11 @@ func extractIPsAndRanges(ipSet *netaddr.IPSet) ([]netaddr.IP, []string) {
 			stringAddresses = append(stringAddresses, r.From().String())
 		}
 
-		for ip := r.From(); ip.Compare(r.To().Next()) != 0; ip = ip.Next() {
+		for ip := r.From(); ; ip = ip.Next() {
 			individualIPs = append(individualIPs, ip)
+			if ip.Compare(r.To()) == 0 {
+				break
+			}
 		}
 	}
 
